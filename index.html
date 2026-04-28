@@ -4910,7 +4910,13 @@ function _processRefineFile(file) {
       if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (err) {
       console.error(err);
-      _refineSetStatus('파일 처리 중 오류가 발생했습니다: ' + (err.message || err), false);
+      const msg = String(err.message || err);
+      // 암호 걸린 파일은 브라우저에서 못 읽음 → 친절한 안내
+      if (/password/i.test(msg) || /encrypted/i.test(msg)) {
+        _refineSetStatus('🔒 이 엑셀 파일은 암호가 걸려 있어 읽을 수 없습니다. 엑셀에서 [파일 → 정보 → 통합 문서 보호 → 암호로 암호화] 에서 암호를 비우고 저장한 뒤 다시 업로드해주세요.', false);
+      } else {
+        _refineSetStatus('파일 처리 중 오류가 발생했습니다: ' + msg, false);
+      }
     }
   };
   reader.readAsArrayBuffer(file);
