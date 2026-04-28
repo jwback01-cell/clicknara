@@ -1371,6 +1371,9 @@ function navigate(page) {
   closeSidebar();
   if (page === 'dashboard') {
     try { renderClicknaraDashboard(); } catch(_) {}
+    // 백그라운드 자동 동기화 — 다른 PC에서 변경사항이 있으면 자동으로 가져와서 다시 렌더링
+    // (10초 throttle, 비동기로 await 안 함 → 화면 전환 즉시 / 데이터는 도착 후 자동 갱신)
+    try { cnRefreshDashboardFromCloud(); } catch(_) {}
   }
   if (isChannelPage) {
     _cnChannel = (page === 'coupang') ? 'coupang' : 'smartstore';
@@ -1652,6 +1655,25 @@ try {
     if (document.visibilityState === 'hidden') _cnFlushAllPendingPushes();
   });
 } catch(_) {}
+
+// 대시보드 진입 시 백그라운드 자동 동기화 (다른 PC의 변경사항을 자동으로 가져옴)
+let _cnLastCloudPullAt = 0;
+const CN_AUTO_PULL_MIN_INTERVAL_MS = 10 * 1000; // 10초 throttle (잦은 네비게이션 시 네트워크 보호)
+async function cnRefreshDashboardFromCloud() {
+  // 1) Throttle: 최근 10초 내 풀이 있었으면 스킵
+  const now = Date.now();
+  if (now - _cnLastCloudPullAt < CN_AUTO_PULL_MIN_INTERVAL_MS) return;
+  _cnLastCloudPullAt = now;
+  // 2) 로그인 확인 — 미로그인 시 풀 시도해도 RLS로 빈 데이터 → 의미 없음
+  try {
+    const { data: { session } } = await _supabase.auth.getSession();
+    if (!session) return;
+  } catch(_) { return; }
+  // 3) 강제 풀 (cnInitialCloudSync 게이트 우회)
+  _cnCloudPullDone = false;
+  try { await cnInitialCloudSync(); } catch(_) {}
+  // cnInitialCloudSync가 changed 시 자동으로 렌더링 + 캐시 무효화함
+}
 
 // 로그인 직후/대시보드 진입 시 1회: 클라우드의 데이터로 로컬을 보강 (안전 가드 포함)
 async function cnInitialCloudSync() {
