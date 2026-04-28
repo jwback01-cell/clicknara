@@ -4748,7 +4748,8 @@ function _refineExtractProduct(name) {
   if (!name) return '';
   let s = String(name).trim();
   // 선행 [브랜드] 또는 [지클릭커] 등 대괄호 prefix 제거
-  s = s.replace(/^\s*(?:\[[^\]]+\]\s*)+/, '');
+  s = s.replace(/^\s*(?:\[[^\]]+\]\s*)+/, '').trim();
+  if (!s) return '';
   const tokens = s.split(/\s+/);
   const kept = [];
   for (let t of tokens) {
@@ -4763,6 +4764,9 @@ function _refineExtractProduct(name) {
     if (kept.length > 0 && /^[A-Za-z]+$/.test(t) && t.length > 4) break;
     kept.push(t);
   }
+  // 영문/숫자 모델 토큰을 못 뽑았으면 → 원본 이름(브랜드 prefix 제거 후) 그대로 사용.
+  // 한글 위주 상품명("삼성 27인치 모니터" 등) 보호용 폴백.
+  if (kept.length === 0) return s;
   return kept.join(' ');
 }
 
@@ -4805,16 +4809,32 @@ function _refineFindHeaderRow(rows) {
 
 function _refineParseDate(v) {
   if (v == null || v === '') return '';
+  // Excel 시리얼 숫자 (1900-01-01 기준)
   if (typeof v === 'number') {
     const d = new Date(Math.round((v - 25569) * 86400 * 1000));
     if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
   }
-  const s = String(v).trim();
-  const m = s.match(/(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);
-  if (m) {
-    return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+  // XLSX cellDates가 Date 객체로 반환한 경우
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    const y = v.getFullYear(), m = v.getMonth()+1, d = v.getDate();
+    return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
   }
-  return s.slice(0, 10);
+  const s = String(v).trim();
+  // 4자리 연도 형식: 2026-04-28, 2026/4/28, 2026.4.28
+  let m = s.match(/(\d{4})[-./년]\s*(\d{1,2})[-./월]\s*(\d{1,2})/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+  // 8자리 붙은 형식: 20260428
+  m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  // 2자리 연도 형식: 26-04-28, 26/4/28
+  m = s.match(/^(\d{2})[-./](\d{1,2})[-./](\d{1,2})$/);
+  if (m) {
+    const yy = parseInt(m[1], 10);
+    const yyyy = yy < 70 ? 2000 + yy : 1900 + yy;
+    return `${yyyy}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+  }
+  // 인식 실패 → 빈 값으로 (이전엔 s.slice(0,10) 가 비매출일도 통과시켜서 0건 문제 발생)
+  return '';
 }
 
 function handleRefineUpload(event) {
