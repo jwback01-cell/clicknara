@@ -1769,20 +1769,28 @@ window.cnManualSync = async function() {
       setTimeout(() => toast.remove(), 2500);
       return;
     }
-    // 1) 로컬에 있는 데이터를 모두 강제로 클라우드에 푸시 (await 으로 완료 대기)
-    let pushedKeys = [];
-    for (const key of CN_SYNC_KEYS) {
-      try {
-        const raw = localStorage.getItem(key);
-        if (!raw) continue;
-        const arr = JSON.parse(raw);
-        const ok = await _cnCloudPush(key, arr);
-        if (ok) pushedKeys.push(key);
-      } catch(_) {}
-    }
-    // 2) 클라우드 → 로컬 동기화 다시 실행 (안전 가드 포함, 더 풍부한 쪽 우선)
+    // ── PULL-FIRST 순서 ──
+    // (이전 버전은 로컬을 무조건 클라우드에 푸시했는데, 다른 PC가 클라우드에 더 새로운 데이터를
+    //  올려놓은 경우 PC2의 동기화 버튼이 그 데이터를 덮어써버리는 심각한 버그가 있었음)
+    //
+    // 1) 클라우드 → 로컬 (merge-aware: cloudCount > localCount 인 키만 갱신,
+    //    localCount > cloudCount 인 키는 로컬 보존 + 클라우드로 푸시 큐잉)
     _cnCloudPullDone = false;
     await cnInitialCloudSync();
+    // 2) 대기 중이거나 cnInitialCloudSync가 큐잉한 푸시들을 즉시 await 으로 발송
+    //    (debounce 1500ms 기다리지 않고 바로 클라우드 반영)
+    const pendingKeys = Object.keys(_cnPendingPayloads);
+    let pushedKeys = [];
+    for (const key of pendingKeys) {
+      if (_cnSyncTimers[key]) { clearTimeout(_cnSyncTimers[key]); _cnSyncTimers[key] = null; }
+      const payload = _cnPendingPayloads[key];
+      if (payload === undefined) continue;
+      const ok = await _cnCloudPush(key, payload);
+      if (ok) {
+        pushedKeys.push(key);
+        if (_cnPendingPayloads[key] === payload) delete _cnPendingPayloads[key];
+      }
+    }
     // 3) 로컬 데이터 카운트 요약
     const labelByKey = {
       'cn_user_aliases': '사용자 매핑',
