@@ -4908,6 +4908,11 @@ function _processRefineFile(file) {
       let currentChannel = '';
       let headerRowsCount = 0;
       let dataRowsCount = 0;
+      let candidateRows = 0;       // 섹션헤더 아닌 행 (잠재 데이터)
+      let dropEmptyDate = 0;       // 매출일/상품명 비어서 스킵
+      let dropParseDate = 0;       // 날짜 파싱 실패
+      let dropParseProduct = 0;    // 상품명 추출 실패
+      let dropZeroQty = 0;         // 수량 0
       const channelSet = new Set();
 
       for (let i = rowIdx + 1; i < allRows.length; i++) {
@@ -4924,15 +4929,35 @@ function _processRefineFile(file) {
         const rawDate    = row[dateIdx];
         const rawProduct = row[productIdx];
         const rawQty     = row[qtyIdx];
-        if (!rawDate || !rawProduct) continue;
+        candidateRows++;
+        if (!rawDate || !rawProduct) { dropEmptyDate++; continue; }
         const date    = _refineParseDate(rawDate);
         const product = _refineExtractProduct(rawProduct);
         const qty     = Number(String(rawQty || 0).replace(/[,\s]/g, '')) || 0;
-        if (!date || !product || !qty) continue;
+        if (!date)    { dropParseDate++;    continue; }
+        if (!product) { dropParseProduct++; continue; }
+        if (!qty)     { dropZeroQty++;      continue; }
         const channel = currentChannel || '미분류';
         const key = `${date}|${channel}|${product}`;
         aggMap.set(key, (aggMap.get(key) || 0) + qty);
         dataRowsCount++;
+      }
+
+      // 데이터가 0건인데 후보 행이 있었다면 진단 정보 표시
+      if (dataRowsCount === 0 && candidateRows > 0) {
+        const reasons = [];
+        if (dropEmptyDate)    reasons.push(`매출일/상품명 빈 셀 ${dropEmptyDate}건`);
+        if (dropParseDate)    reasons.push(`날짜 인식 실패 ${dropParseDate}건`);
+        if (dropParseProduct) reasons.push(`상품명 추출 실패 ${dropParseProduct}건`);
+        if (dropZeroQty)      reasons.push(`수량 0 ${dropZeroQty}건`);
+        // 첫 후보 행 샘플 (디버그용)
+        const sample = allRows[rowIdx + 1] || [];
+        const sampleStr = `[샘플] 매출일=${JSON.stringify(sample[dateIdx])}, 상품명=${JSON.stringify(sample[productIdx])}, 수량=${JSON.stringify(sample[qtyIdx])}`;
+        console.warn('[refine] 데이터 0건 진단:', { rowIdx, dateIdx, productIdx, qtyIdx, candidateRows, dropEmptyDate, dropParseDate, dropParseProduct, dropZeroQty, sample });
+        _refineSetStatus(`정제 0건 — 후보 ${candidateRows}건 중 모두 제외됨 (${reasons.join(', ') || '원인불명'}). 콘솔(F12)에서 상세 확인. ${sampleStr}`, false);
+        _refineResult = [];
+        renderRefinePreview();
+        return;
       }
 
       // 결과 배열로 변환
