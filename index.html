@@ -2246,6 +2246,22 @@ function _cnCodesMatch(a, b) {
   return false;
 }
 
+// 색상/변종 추출 — 같은 모델 코드를 공유하는 제품들(예: WK60 색상별 7종) 사이에서
+// 광고비/물류비를 색상별로 정확히 귀속시키기 위한 보조 키.
+// 1) 끝 (...) 안 내용 우선 (예: "(바닐라옐로우)" → "바닐라옐로우")
+// 2) 한글 토큰의 마지막 단어 (예: "WK60 바닐라옐로우" → "바닐라옐로우",
+//                                 "[지클릭커] WK60 무선 키보드 옐로우" → "옐로우")
+// 3) 한글이 없으면 빈 문자열 → 색상 필터 무력화 (코드만으로 매칭)
+function _cnExtractVariant(name) {
+  if (!name) return '';
+  const s = String(name).trim();
+  const m = s.match(/\(([^)]+)\)\s*$/);
+  if (m) return m[1].trim();
+  const koreanWords = s.match(/[가-힣]+/g) || [];
+  if (koreanWords.length === 0) return '';
+  return koreanWords[koreanWords.length - 1];
+}
+
 // 수동 제품 매핑 — 다른 데이터의 코드/품목코드/대표품명 → 매출 상품명으로 귀속
 // 키(좌측)는 logistics/storage/advoost 등에서 등장하는 값, 값(우측)은 매출 상품명
 // 하드코딩된 기본 매핑 (코드로 관리)
@@ -3557,8 +3573,20 @@ function cnShowProductMatches(productName) {
     return true;
   };
 
-  const productCode = _cnExtractCode(productName);
-  const allAliases  = _cnAllAliases();
+  const productCode    = _cnExtractCode(productName);
+  const productVariant = _cnExtractVariant(productName);
+  const allAliases     = _cnAllAliases();
+
+  // 같은 코드를 공유하는 모든 제품 수집 — 색상 필터 판정에 사용
+  // (sales 데이터의 모든 product + 별칭 대상 + 광고비 캠페인까지 — 분배 로직과 동일한 모집단)
+  const _allProductNames = new Set();
+  _cnLoadForDashboard('sales').forEach(r => {
+    if (_cnIsTotalRow(r, CN_SCHEMA.sales)) return;
+    const n = String(r.product || '').trim();
+    if (n) _allProductNames.add(n);
+  });
+  Object.values(allAliases).forEach(n => { if (n) _allProductNames.add(n); });
+  _allProductNames.add(productName);
 
   // "rowName → 이 상품으로 귀속되는가?" 를 판정하고 사유 문자열을 돌려줌
   // (실제 배분 로직과 동일한 우선순위: 별칭이 있으면 별칭 대상으로만 귀속, 다른 상품이면 포함 X)
@@ -3581,13 +3609,32 @@ function cnShowProductMatches(productName) {
       return '별칭 매칭';
     }
     // 2) 별칭이 없을 때만 코드 매칭 고려
-    if (productCode) {
-      const rowCode = _cnExtractCode(s);
-      if (rowCode && _cnCodesMatch(productCode, rowCode)) {
-        return `코드 매칭: "${rowCode}" ↔ "${productCode}"`;
+    if (!productCode) return null;
+    const rowCode = _cnExtractCode(s);
+    if (!rowCode || !_cnCodesMatch(productCode, rowCode)) return null;
+
+    // 3) 색상/변종 필터 — 분배 로직과 동일한 규칙
+    //    같은 코드를 공유하는 제품이 여러 개고 소스에 변종이 있으면 변종 일치 제품에만 귀속
+    const codeMates = [];
+    _allProductNames.forEach(n => {
+      const c = _cnExtractCode(n);
+      if (c && _cnCodesMatch(c, rowCode)) codeMates.push(n);
+    });
+    if (codeMates.length > 1) {
+      const sourceVariant = _cnExtractVariant(s);
+      if (sourceVariant) {
+        const variantMatched = codeMates.filter(n => _cnExtractVariant(n) === sourceVariant);
+        if (variantMatched.length > 0) {
+          // 변종 필터 적용 — 이 제품이 그 안에 있어야만 매칭
+          if (productVariant === sourceVariant) {
+            return `코드+색상 매칭: "${rowCode}" / "${sourceVariant}"`;
+          }
+          return null; // 색상 다름 → 이 제품에는 귀속 안 됨
+        }
+        // 변종 일치 0개 → 코드만 매칭 (기존 동작)
       }
     }
-    return null;
+    return `코드 매칭: "${rowCode}" ↔ "${productCode}"`;
   };
 
   const logistics = _cnLoadForDashboard('logistics');
@@ -4207,7 +4254,17 @@ function renderClicknaraDashboard(opts) {
       const otherCode = otherName ? _cnExtractCode(otherName) : '';
       let matched = false;
       if (otherCode) {
-        const matches = Object.keys(products).filter(p => _cnCodesMatch(products[p].code, otherCode));
+        let matches = Object.keys(products).filter(p => _cnCodesMatch(products[p].code, otherCode));
+        // 색상/변종 필터 — 같은 코드를 공유하는 제품이 여러 개일 때 (예: WK60 색상별 7종)
+        // 소스 이름의 변종(예: "바닐라옐로우")과 일치하는 제품에만 귀속시켜 정확도 향상
+        if (matches.length > 1) {
+          const sourceVariant = _cnExtractVariant(otherName);
+          if (sourceVariant) {
+            const variantMatches = matches.filter(p => _cnExtractVariant(p) === sourceVariant);
+            if (variantMatches.length > 0) matches = variantMatches;
+            // 색상 일치 0개 → matches 그대로 (코드만으로 매칭, 기존 동작)
+          }
+        }
         if (matches.length > 0) {
           const per = value / matches.length;
           matches.forEach(p => { products[p][bucketKey] += per; });
