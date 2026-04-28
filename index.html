@@ -1702,6 +1702,8 @@ async function cnInitialCloudSync() {
     }
   }
   if (changed) {
+    // 클라우드에서 데이터를 가져와 로컬을 덮어썼으니 대시보드 캐시 무효화
+    _cnBumpDataVersion();
     try { renderClicknaraDashboard(); } catch(_) {}
     try { renderClicknaraDataPanel(); } catch(_) {}
   }
@@ -1863,6 +1865,15 @@ const CN_CHANNEL_LIST = ['smartstore','coupang'];
 const CN_CHANNEL_LABEL = { smartstore: '스마트스토어', coupang: '쿠팡', all: '전체' };
 let _cnChannel = 'smartstore'; // 현재 업로드/데이터 탭에서 사용하는 채널
 let _cnDashChannel = 'all';    // 대시보드 필터: 'all' | 'smartstore' | 'coupang'
+// 대시보드 캐시 — 데이터/필터/탭 상태가 동일하면 재계산 건너뛰기 (네비 클릭 시 즉시 응답)
+let _cnDataVersion = 0;        // 데이터가 바뀔 때마다 증가 (저장/매핑/별칭/클라우드 풀)
+let _cnLoadCache = null;       // _cnLoadForDashboard 결과 캐시 — { version, channel, data: { type: rows, ... } }
+let _cnDashRenderCache = null; // renderClicknaraDashboard 키 — 동일 키면 DOM 그대로 두고 즉시 return
+function _cnBumpDataVersion() {
+  _cnDataVersion = (_cnDataVersion + 1) | 0;
+  _cnLoadCache = null;
+  _cnDashRenderCache = null;
+}
 const CN_KEYS = CN_KEYS_BY_CHANNEL.smartstore; // 하위 호환용 (일부 dead code 참조)
 const CN_SCHEMA = {
   sales: {
@@ -2076,22 +2087,33 @@ function _cnLoad(type, channel) {
 function _cnSave(type, arr, channel) {
   const key = _cnKey(type, channel);
   localStorage.setItem(key, JSON.stringify(arr));
+  // 데이터 변경 → 대시보드 캐시 무효화
+  _cnBumpDataVersion();
   // 로컬 백업 (일일 1회 자동 스냅샷)
   try { _cnSaveLocalBackup(key, arr, 'save'); } catch(_) {}
   // 클라우드(Supabase) 백업 — 디바운스되어 빠른 연속 저장은 마지막 한 번만 올라감
   try { _cnQueueCloudPush(key, arr); } catch(_) {}
 }
 // 대시보드 전용: 전체 채널 합산(기본) 또는 특정 채널만 로드 + _channel 태그 부여
+// 데이터/채널이 같으면 캐시 재사용 (12번 JSON.parse → 1번)
 function _cnLoadForDashboard(type) {
+  if (!_cnLoadCache || _cnLoadCache.version !== _cnDataVersion || _cnLoadCache.channel !== _cnDashChannel) {
+    _cnLoadCache = { version: _cnDataVersion, channel: _cnDashChannel, data: {} };
+  }
+  if (_cnLoadCache.data[type]) return _cnLoadCache.data[type];
+  let result;
   if (_cnDashChannel === 'all') {
     const out = [];
     CN_CHANNEL_LIST.forEach(ch => {
       const rows = _cnLoad(type, ch);
       rows.forEach(r => { out.push(Object.assign({ _channel: ch }, r)); });
     });
-    return out;
+    result = out;
+  } else {
+    result = _cnLoad(type, _cnDashChannel).map(r => Object.assign({ _channel: _cnDashChannel }, r));
   }
-  return _cnLoad(type, _cnDashChannel).map(r => Object.assign({ _channel: _cnDashChannel }, r));
+  _cnLoadCache.data[type] = result;
+  return result;
 }
 function _cnFmtWon(n) {
   const v = Math.round(Number(n) || 0);
@@ -2255,6 +2277,8 @@ function _cnSaveUserAlias(itemCode, productName) {
   if (productName) cur[key] = String(productName);
   else delete cur[key];
   try { localStorage.setItem(CN_USER_ALIASES_KEY, JSON.stringify(cur)); } catch(_) {}
+  // 매핑 변경 → 대시보드 캐시 무효화
+  _cnBumpDataVersion();
   // 클라우드(Supabase)에도 백업 — 디바운스됨
   try { _cnQueueCloudPush(CN_USER_ALIASES_KEY, cur); } catch(_) {}
 }
@@ -2271,6 +2295,8 @@ function _cnSetShipFee(productName, fee) {
   if (!isNaN(n) && n > 0) cur[key] = n;
   else delete cur[key];
   try { localStorage.setItem(CN_SHIP_FEE_KEY, JSON.stringify(cur)); } catch(_) {}
+  // 택배비 매핑 변경 → 대시보드 캐시 무효화
+  _cnBumpDataVersion();
   // 클라우드(Supabase)에도 백업 — 디바운스됨
   try { _cnQueueCloudPush(CN_SHIP_FEE_KEY, cur); } catch(_) {}
 }
@@ -3828,6 +3854,29 @@ function setDashboardChannel(channel) {
 
 function renderClicknaraDashboard(opts) {
   opts = opts || {};
+  // ── 렌더 캐시: 데이터/필터/탭이 모두 동일하면 DOM이 이미 정확한 상태이므로 즉시 return ──
+  // (네비 클릭 시 같은 화면 재계산 방지 — 두 번째 진입부터 즉시 응답)
+  {
+    const _ck_kpiStart  = (document.getElementById('cn-kpi-start')     || {}).value || '';
+    const _ck_kpiEnd    = (document.getElementById('cn-kpi-end')       || {}).value || '';
+    const _ck_prodStart = (document.getElementById('cn-product-start') || {}).value || '';
+    const _ck_prodEnd   = (document.getElementById('cn-product-end')   || {}).value || '';
+    const _ck_mainEl = document.getElementById('dash-subpanel-main');
+    const _ck_prodEl = document.getElementById('dash-subpanel-products');
+    const _ck_shipEl = document.getElementById('dash-subpanel-shipfee');
+    const _ck_mainVis = !!(_ck_mainEl && !_ck_mainEl.classList.contains('hidden'));
+    const _ck_prodVis = !!(_ck_prodEl && !_ck_prodEl.classList.contains('hidden'));
+    const _ck_shipVis = !!(_ck_shipEl && !_ck_shipEl.classList.contains('hidden'));
+    const _ck_renderKey = [
+      _cnDataVersion, _cnDashChannel, _cnProductBrandFilter,
+      _ck_kpiStart, _ck_kpiEnd, _ck_prodStart, _ck_prodEnd,
+      _ck_mainVis ? '1':'0', _ck_prodVis ? '1':'0', _ck_shipVis ? '1':'0',
+      opts.skipChart ? '1':'0',
+    ].join('|');
+    if (_cnDashRenderCache === _ck_renderKey) return; // 캐시 적중 — DOM 이미 정확
+    _cnDashRenderCache = _ck_renderKey;
+  }
+
   // 월별 버튼 UI 보장 (현재 년도 기준 1월~이번달)
   try { _cnBuildMonthButtons(); } catch(_) {}
   // 채널 필터/별칭 변경 시 코드 캐시 다시 만들기
