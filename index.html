@@ -1288,6 +1288,38 @@ tailwind.config = {
           </table>
         </div>
       </section>
+
+      <!-- 복사용 텍스트 영역 (정제 결과를 클립보드로 복사) -->
+      <section id="refine-copy-section" class="hidden bg-white rounded-4xl panel p-6 md:p-8">
+        <div class="flex items-center justify-between flex-wrap gap-3 mb-3">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-[12px] flex items-center justify-center bg-brand-orange-light shrink-0">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FF9800" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </div>
+            <div>
+              <h2 class="text-lg md:text-xl font-bold">복사용 텍스트 📋</h2>
+              <p class="text-brand-gray text-xs mt-0.5">탭으로 구분된 형태 — 엑셀/스프레드시트에 바로 붙여넣기 가능</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <select id="refine-copy-format" onchange="renderRefineCopyText()" class="text-xs font-semibold border border-brand-border rounded-full px-3 py-1.5 bg-white cursor-pointer">
+              <option value="tsv" selected>탭 구분 (엑셀용)</option>
+              <option value="csv">콤마 구분 (CSV)</option>
+              <option value="md">표 형식 (마크다운)</option>
+            </select>
+            <label class="flex items-center gap-1.5 text-xs text-brand-gray cursor-pointer">
+              <input type="checkbox" id="refine-copy-with-header" checked onchange="renderRefineCopyText()" class="w-3.5 h-3.5 cursor-pointer">
+              헤더 포함
+            </label>
+            <button onclick="copyRefineToClipboard()" class="px-4 py-2 rounded-full text-sm font-bold bg-brand-black text-white hover:opacity-90 inline-flex items-center gap-2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              <span id="refine-copy-btn-label">복사</span>
+            </button>
+          </div>
+        </div>
+        <textarea id="refine-copy-text" readonly onclick="this.select()" class="w-full h-64 text-xs font-mono border border-brand-border rounded-xl p-3 bg-brand-bg focus:outline-none focus:border-brand-black resize-y" placeholder="정제 결과가 여기 표시됩니다."></textarea>
+        <p class="text-[11px] text-brand-gray mt-2">💡 텍스트 영역을 클릭하면 자동 전체 선택됩니다. <strong>Ctrl + C</strong> 로 복사 또는 우측 <strong>복사</strong> 버튼 사용.</p>
+      </section>
     </main>
   </div>
 </div>
@@ -4966,6 +4998,89 @@ function renderRefinePreview() {
     <td class="px-4 py-3 rounded-l-xl" colspan="3">합계 (${filtered.length.toLocaleString('ko-KR')}건)</td>
     <td class="px-4 py-3 text-right rounded-r-xl">${_cnFmtNum(totalQty)}</td>
   </tr>`;
+  // 복사용 텍스트도 함께 갱신
+  try { renderRefineCopyText(); } catch(_) {}
+}
+
+// 복사용 텍스트 생성 (현재 검색 필터 적용된 결과 기준)
+function _refineFilteredResult() {
+  const searchEl = document.getElementById('refine-search');
+  const q = (searchEl && searchEl.value || '').trim().toLowerCase();
+  if (!q) return _refineResult;
+  return _refineResult.filter(r => r.product.toLowerCase().includes(q) || r.channel.toLowerCase().includes(q));
+}
+function renderRefineCopyText() {
+  const sec  = document.getElementById('refine-copy-section');
+  const ta   = document.getElementById('refine-copy-text');
+  const fmtEl = document.getElementById('refine-copy-format');
+  const headerEl = document.getElementById('refine-copy-with-header');
+  if (!sec || !ta) return;
+  const rows = _refineFilteredResult();
+  if (!rows || !rows.length) { sec.classList.add('hidden'); return; }
+  sec.classList.remove('hidden');
+  const fmt = (fmtEl && fmtEl.value) || 'tsv';
+  const withHeader = !headerEl || headerEl.checked;
+  const headers = ['날짜', '채널', '제품', '수량'];
+  let text = '';
+  if (fmt === 'tsv') {
+    if (withHeader) text += headers.join('\t') + '\n';
+    text += rows.map(r => [r.date, r.channel, r.product, r.qty].join('\t')).join('\n');
+  } else if (fmt === 'csv') {
+    // CSV: 콤마/따옴표/줄바꿈이 있으면 따옴표로 감싸고 내부 따옴표는 두 번
+    const esc = v => {
+      const s = String(v == null ? '' : v);
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    if (withHeader) text += headers.map(esc).join(',') + '\n';
+    text += rows.map(r => [r.date, r.channel, r.product, r.qty].map(esc).join(',')).join('\n');
+  } else if (fmt === 'md') {
+    if (withHeader) {
+      text += '| ' + headers.join(' | ') + ' |\n';
+      text += '|' + headers.map(() => '---').join('|') + '|\n';
+    }
+    text += rows.map(r => `| ${r.date} | ${r.channel} | ${r.product} | ${r.qty} |`).join('\n');
+  }
+  ta.value = text;
+}
+function copyRefineToClipboard() {
+  const ta = document.getElementById('refine-copy-text');
+  const lblEl = document.getElementById('refine-copy-btn-label');
+  if (!ta || !ta.value) {
+    alert('복사할 데이터가 없습니다.');
+    return;
+  }
+  const setLabel = (txt, cls) => {
+    if (lblEl) lblEl.textContent = txt;
+    if (cls) {
+      const btn = lblEl && lblEl.closest('button');
+      if (btn) {
+        btn.classList.remove('bg-brand-black','bg-brand-green','bg-red-500');
+        btn.classList.add(cls);
+      }
+    }
+  };
+  // 모던 API 시도 → 실패 시 textarea select+execCommand 폴백
+  const fallback = () => {
+    try {
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      const ok = document.execCommand('copy');
+      if (ok) { setLabel('✓ 복사됨', 'bg-brand-green'); }
+      else    { setLabel('복사 실패 (Ctrl+C)', 'bg-red-500'); }
+    } catch (e) {
+      setLabel('복사 실패 (Ctrl+C)', 'bg-red-500');
+    }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(ta.value).then(
+      () => { setLabel('✓ 복사됨', 'bg-brand-green'); },
+      () => { fallback(); }
+    );
+  } else {
+    fallback();
+  }
+  // 1.8초 후 라벨 원복
+  setTimeout(() => setLabel('복사', 'bg-brand-black'), 1800);
 }
 
 function downloadRefineResult() {
